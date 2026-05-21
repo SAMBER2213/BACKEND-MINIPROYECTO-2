@@ -3,6 +3,27 @@ import { db, auth } from '../config/firebase';
 import { AuthRequest } from '../middleware/auth';
 
 const USERS_COLLECTION = 'users';
+const USERNAMES_COLLECTION = 'usernames';
+const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
+
+const normalizeUsername = (username: unknown): string => {
+  if (typeof username !== 'string') return '';
+  return username.trim().toLowerCase();
+};
+
+const validateUsername = (username: string): string | null => {
+  if (!username) return 'username es requerido';
+  if (!USERNAME_PATTERN.test(username)) {
+    return 'El username debe tener 3 a 20 caracteres y solo puede incluir letras minúsculas, números y guion bajo';
+  }
+  return null;
+};
+
+const createHttpError = (message: string, statusCode: number): Error & { statusCode: number } => {
+  const error = new Error(message) as Error & { statusCode: number };
+  error.statusCode = statusCode;
+  return error;
+};
 
 /**
  * GET /api/users/me
@@ -25,56 +46,114 @@ export const getMyProfile = async (req: AuthRequest, res: Response): Promise<voi
 };
 
 /**
+ * GET /api/users/username/:username/available
+ * Verifica si un username esta disponible para el usuario autenticado.
+ */
+export const getUsernameAvailability = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const uid = req.user!.uid;
+    const username = normalizeUsername(req.params.username);
+    const validationError = validateUsername(username);
+
+    if (validationError) {
+      res.status(400).json({ success: false, error: validationError });
+      return;
+    }
+
+    const usernameDoc = await db.collection(USERNAMES_COLLECTION).doc(username).get();
+    const ownerUid = usernameDoc.exists ? usernameDoc.data()?.uid : null;
+    const available = !usernameDoc.exists || ownerUid === uid;
+
+    res.json({
+      success: true,
+      data: {
+        username,
+        available,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
  * POST /api/users/profile
  * Crea o actualiza el perfil del usuario en Firestore.
- * Se llama después del registro (manual o Google).
+ * Reserva el username en la coleccion usernames para bloquear duplicados.
  */
 export const createOrUpdateProfile = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const uid = req.user!.uid;
-    const { displayName, username, photoURL } = req.body;
+    const { displayName, photoURL } = req.body;
+    const username = normalizeUsername(req.body.username);
 
-    if (!displayName || !username) {
-      res.status(400).json({ success: false, error: 'displayName y username son requeridos' });
+    if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
+      res.status(400).json({ success: false, error: 'displayName es requerido' });
       return;
     }
 
-    // Check username uniqueness
-    const usernameQuery = await db
-      .collection(USERS_COLLECTION)
-      .where('username', '==', username)
-      .limit(1)
-      .get();
-
-    if (!usernameQuery.empty && usernameQuery.docs[0].id !== uid) {
-      res.status(409).json({ success: false, error: 'El username ya está en uso' });
+    const validationError = validateUsername(username);
+    if (validationError) {
+      res.status(400).json({ success: false, error: validationError });
       return;
     }
 
-    const now = new Date().toISOString();
     const userDocRef = db.collection(USERS_COLLECTION).doc(uid);
-    const existingDoc = await userDocRef.get();
+    const usernameDocRef = db.collection(USERNAMES_COLLECTION).doc(username);
 
-    const profileData = {
-      uid,
-      email: req.user!.email ?? '',
-      displayName,
-      username,
-      photoURL: photoURL ?? null,
-      updatedAt: now,
-      ...(existingDoc.exists ? {} : { createdAt: now }),
-    };
+    const result = await db.runTransaction(async (transaction) => {
+      const userDoc = await transaction.get(userDocRef);
+      const usernameDoc = await transaction.get(usernameDocRef);
 
-    await userDocRef.set(profileData, { merge: true });
+      if (usernameDoc.exists && usernameDoc.data()?.uid !== uid) {
+        throw createHttpError('El username ya está en uso', 409);
+      }
 
-    const statusCode = existingDoc.exists ? 200 : 201;
+      const previousUsername = userDoc.exists ? userDoc.data()?.username : null;
+      const now = new Date().toISOString();
+
+      const profileData = {
+        uid,
+        email: req.user!.email ?? '',
+        displayName: displayName.trim(),
+        username,
+        photoURL: photoURL ?? null,
+        updatedAt: now,
+        ...(userDoc.exists ? {} : { createdAt: now }),
+      };
+
+      transaction.set(
+        usernameDocRef,
+        {
+          uid,
+          username,
+          updatedAt: now,
+          ...(usernameDoc.exists ? {} : { createdAt: now }),
+        },
+        { merge: true }
+      );
+
+      if (previousUsername && previousUsername !== username) {
+        const previousUsernameDocRef = db.collection(USERNAMES_COLLECTION).doc(previousUsername);
+        transaction.delete(previousUsernameDocRef);
+      }
+
+      transaction.set(userDocRef, profileData, { merge: true });
+
+      return {
+        profileData,
+        existed: userDoc.exists,
+      };
+    });
+
+    const statusCode = result.existed ? 200 : 201;
     res.status(statusCode).json({
       success: true,
-      message: existingDoc.exists ? 'Perfil actualizado' : 'Perfil creado',
-      data: profileData,
+      message: result.existed ? 'Perfil actualizado' : 'Perfil creado',
+      data: result.profileData,
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode ?? 500).json({ success: false, error: error.message });
   }
 };
 
@@ -87,13 +166,13 @@ export const updateMyProfile = async (req: AuthRequest, res: Response): Promise<
     const uid = req.user!.uid;
     const { displayName, photoURL } = req.body;
 
-    if (!displayName) {
+    if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
       res.status(400).json({ success: false, error: 'displayName es requerido' });
       return;
     }
 
     const updateData = {
-      displayName,
+      displayName: displayName.trim(),
       photoURL: photoURL ?? null,
       updatedAt: new Date().toISOString(),
     };
@@ -101,7 +180,7 @@ export const updateMyProfile = async (req: AuthRequest, res: Response): Promise<
     await db.collection(USERS_COLLECTION).doc(uid).update(updateData);
 
     // Also update Firebase Auth display name
-    await auth.updateUser(uid, { displayName, photoURL: photoURL ?? undefined });
+    await auth.updateUser(uid, { displayName: displayName.trim(), photoURL: photoURL ?? undefined });
 
     res.json({ success: true, message: 'Perfil actualizado', data: updateData });
   } catch (error: any) {
@@ -116,9 +195,16 @@ export const updateMyProfile = async (req: AuthRequest, res: Response): Promise<
 export const deleteMyAccount = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const uid = req.user!.uid;
+    const userDocRef = db.collection(USERS_COLLECTION).doc(uid);
+    const userDoc = await userDocRef.get();
+    const username = userDoc.exists ? userDoc.data()?.username : null;
 
-    // Delete user document from Firestore
-    await db.collection(USERS_COLLECTION).doc(uid).delete();
+    await db.runTransaction(async (transaction) => {
+      transaction.delete(userDocRef);
+      if (username) {
+        transaction.delete(db.collection(USERNAMES_COLLECTION).doc(username));
+      }
+    });
 
     // Delete user from Firebase Auth
     await auth.deleteUser(uid);

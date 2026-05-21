@@ -6,6 +6,7 @@ import {
   updateMyProfile,
   deleteMyAccount,
   getUserById,
+  getUsernameAvailability,
 } from '../controllers/userController';
 
 const router = Router();
@@ -134,6 +135,51 @@ router.put('/me', verifyToken, updateMyProfile);
  *         description: No autenticado
  */
 router.delete('/me', verifyToken, deleteMyAccount);
+
+
+/**
+ * @swagger
+ * /api/users/username/{username}/available:
+ *   get:
+ *     summary: Validar disponibilidad de username
+ *     description: Retorna si el username está disponible. El mismo usuario puede consultar su username actual sin que cuente como duplicado.
+ *     tags: [Users]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: username
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: '^[a-z0-9_]{3,20}$'
+ *         description: Username normalizado en minúsculas
+ *     responses:
+ *       200:
+ *         description: Resultado de disponibilidad
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     username:
+ *                       type: string
+ *                       example: juangarcia
+ *                     available:
+ *                       type: boolean
+ *                       example: true
+ *       400:
+ *         description: Username inválido
+ *       401:
+ *         description: No autenticado
+ */
+router.get('/username/:username/available', verifyToken, getUsernameAvailability);
 
 /**
  * @swagger

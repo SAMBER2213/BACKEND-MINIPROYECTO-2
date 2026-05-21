@@ -60,7 +60,12 @@ Authorization: Bearer <firebase-id-token>
             email: { type: 'string', format: 'email', example: 'user@example.com' },
             displayName: { type: 'string', example: 'Juan García' },
             photoURL: { type: 'string', nullable: true, example: 'https://...' },
-            username: { type: 'string', example: 'juangarcia' },
+            username: {
+              type: 'string',
+              pattern: '^[a-z0-9_]{3,20}$',
+              example: 'juangarcia',
+              description: 'Username único normalizado en minúsculas. Se reserva también en la colección usernames.',
+            },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },
           },
@@ -96,6 +101,15 @@ Authorization: Bearer <firebase-id-token>
           properties: {
             success: { type: 'boolean', example: false },
             error: { type: 'string', example: 'Descripción del error' },
+          },
+        },
+        UsernameReservation: {
+          type: 'object',
+          properties: {
+            username: { type: 'string', example: 'juangarcia' },
+            uid: { type: 'string', example: 'abc123uid' },
+            createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
           },
         },
         Success: {
