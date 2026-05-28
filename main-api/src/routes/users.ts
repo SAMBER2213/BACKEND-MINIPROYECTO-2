@@ -89,7 +89,7 @@ router.post('/profile', verifyToken, createOrUpdateProfile);
  * /api/users/me:
  *   put:
  *     summary: Actualizar perfil propio
- *     description: Actualiza el displayName y/o photoURL del usuario.
+ *     description: Actualiza displayName, username y photoURL del usuario autenticado.
  *     tags: [Users]
  *     security:
  *       - BearerAuth: []

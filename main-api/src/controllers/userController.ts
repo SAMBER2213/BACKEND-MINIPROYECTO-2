@@ -5,6 +5,7 @@ import { AuthRequest } from '../middleware/auth';
 const USERS_COLLECTION = 'users';
 const USERNAMES_COLLECTION = 'usernames';
 const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
+const INSTITUTIONAL_DOMAIN = '@correounivalle.edu.co';
 
 const normalizeUsername = (username: unknown): string => {
   if (typeof username !== 'string') return '';
@@ -17,6 +18,10 @@ const validateUsername = (username: string): string | null => {
     return 'El username debe tener 3 a 20 caracteres y solo puede incluir letras minúsculas, números y guion bajo';
   }
   return null;
+};
+
+const isInstitutionalEmail = (email?: string | null): boolean => {
+  return Boolean(email?.trim().toLowerCase().endsWith(INSTITUTIONAL_DOMAIN));
 };
 
 const createHttpError = (message: string, statusCode: number): Error & { statusCode: number } => {
@@ -98,6 +103,11 @@ export const createOrUpdateProfile = async (req: AuthRequest, res: Response): Pr
       return;
     }
 
+    if (!isInstitutionalEmail(req.user!.email)) {
+      res.status(400).json({ success: false, error: `Usa tu correo institucional ${INSTITUTIONAL_DOMAIN}` });
+      return;
+    }
+
     const userDocRef = db.collection(USERS_COLLECTION).doc(uid);
     const usernameDocRef = db.collection(USERNAMES_COLLECTION).doc(username);
 
@@ -146,11 +156,6 @@ export const createOrUpdateProfile = async (req: AuthRequest, res: Response): Pr
       };
     });
 
-    await auth.updateUser(uid, {
-      displayName: result.profileData.displayName,
-      photoURL: result.profileData.photoURL ?? undefined,
-    });
-
     const statusCode = result.existed ? 200 : 201;
     res.status(statusCode).json({
       success: true,
@@ -164,32 +169,72 @@ export const createOrUpdateProfile = async (req: AuthRequest, res: Response): Pr
 
 /**
  * PUT /api/users/me
- * Actualiza campos del perfil (displayName, photoURL).
+ * Actualiza campos del perfil (displayName, username, photoURL).
+ * Mantiene la reserva unica del username en Firestore.
  */
 export const updateMyProfile = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const uid = req.user!.uid;
     const { displayName, photoURL } = req.body;
+    const username = normalizeUsername(req.body.username);
 
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
       res.status(400).json({ success: false, error: 'displayName es requerido' });
       return;
     }
 
-    const updateData = {
-      displayName: displayName.trim(),
-      photoURL: photoURL ?? null,
-      updatedAt: new Date().toISOString(),
-    };
+    const validationError = validateUsername(username);
+    if (validationError) {
+      res.status(400).json({ success: false, error: validationError });
+      return;
+    }
 
-    await db.collection(USERS_COLLECTION).doc(uid).update(updateData);
+    const userDocRef = db.collection(USERS_COLLECTION).doc(uid);
+    const usernameDocRef = db.collection(USERNAMES_COLLECTION).doc(username);
 
-    // Also update Firebase Auth display name
-    await auth.updateUser(uid, { displayName: displayName.trim(), photoURL: photoURL ?? undefined });
+    const updatedProfile = await db.runTransaction(async (transaction) => {
+      const userDoc = await transaction.get(userDocRef);
 
-    res.json({ success: true, message: 'Perfil actualizado', data: updateData });
+      if (!userDoc.exists) {
+        throw createHttpError('Perfil no encontrado', 404);
+      }
+
+      const usernameDoc = await transaction.get(usernameDocRef);
+
+      if (usernameDoc.exists && usernameDoc.data()?.uid !== uid) {
+        throw createHttpError('El username ya está en uso', 409);
+      }
+
+      const previousData = userDoc.data()!;
+      const previousUsername = previousData.username;
+      const now = new Date().toISOString();
+
+      const profileData = {
+        ...previousData,
+        displayName: displayName.trim(),
+        username,
+        photoURL: photoURL ?? null,
+        updatedAt: now,
+      };
+
+      transaction.set(usernameDocRef, { uid, username, updatedAt: now }, { merge: true });
+
+      if (previousUsername && previousUsername !== username) {
+        transaction.delete(db.collection(USERNAMES_COLLECTION).doc(previousUsername));
+      }
+
+      transaction.set(userDocRef, profileData, { merge: true });
+
+      return profileData;
+    });
+
+    // Also update Firebase Auth display name. Synthetic avatar ids are stored in Firestore only.
+    const authPhotoURL = typeof photoURL === 'string' && photoURL.startsWith('http') ? photoURL : undefined;
+    await auth.updateUser(uid, { displayName: displayName.trim(), photoURL: authPhotoURL });
+
+    res.json({ success: true, message: 'Perfil actualizado', data: updatedProfile });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode ?? 500).json({ success: false, error: error.message });
   }
 };
 
