@@ -146,6 +146,11 @@ export const createOrUpdateProfile = async (req: AuthRequest, res: Response): Pr
       };
     });
 
+    await auth.updateUser(uid, {
+      displayName: result.profileData.displayName,
+      photoURL: result.profileData.photoURL ?? undefined,
+    });
+
     const statusCode = result.existed ? 200 : 201;
     res.status(statusCode).json({
       success: true,

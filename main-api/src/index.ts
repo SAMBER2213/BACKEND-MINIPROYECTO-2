@@ -35,9 +35,10 @@ if (process.env.NODE_ENV !== 'test') {
 // ─── CORS ─────────────────────────────────────────────────────────
 const allowedOrigins = [
   process.env.FRONTEND_URL ?? 'http://localhost:5173',
+  'https://frontend-miniproyecto-2.vercel.app',
   'http://localhost:5173',
   'http://localhost:3000',
-];
+].filter(Boolean);
 
 app.use(
   cors({
