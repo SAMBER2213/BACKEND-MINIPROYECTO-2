@@ -1,9 +1,12 @@
 import { Response } from 'express';
 import { db } from '../config/firebase';
 import { AuthRequest } from '../middleware/auth';
-import { FieldValue } from 'firebase-admin/firestore';
 
 const ROOMS_COLLECTION = 'rooms';
+
+function buildRoomCode(roomId: string): string {
+  return roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
+}
 
 /**
  * POST /api/rooms
@@ -19,24 +22,34 @@ export const createRoom = async (req: AuthRequest, res: Response): Promise<void>
       return;
     }
 
-    // Get host display name
+    const parsedMaxParticipants = Number(maxParticipants ?? 10);
+    if (Number.isNaN(parsedMaxParticipants) || parsedMaxParticipants < 2 || parsedMaxParticipants > 20) {
+      res.status(400).json({ success: false, error: 'La capacidad de la sala debe estar entre 2 y 20 participantes' });
+      return;
+    }
+
     const userDoc = await db.collection('users').doc(uid).get();
     const hostName = userDoc.exists ? userDoc.data()!.displayName : 'Usuario';
 
+    const docRef = db.collection(ROOMS_COLLECTION).doc();
     const now = new Date().toISOString();
+    const roomCode = buildRoomCode(docRef.id);
+
     const roomData = {
       name: name.trim(),
       description: description?.trim() ?? '',
+      roomCode,
       hostUid: uid,
       hostName,
-      isPrivate: isPrivate ?? false,
-      maxParticipants: maxParticipants ?? 10,
+      hostRole: 'Administrador',
+      isPrivate: Boolean(isPrivate),
+      maxParticipants: parsedMaxParticipants,
       participantCount: 0,
       createdAt: now,
       updatedAt: now,
     };
 
-    const docRef = await db.collection(ROOMS_COLLECTION).add(roomData);
+    await docRef.set(roomData);
 
     res.status(201).json({
       success: true,
@@ -138,8 +151,15 @@ export const updateRoom = async (req: AuthRequest, res: Response): Promise<void>
     const updateData: Record<string, any> = { updatedAt: new Date().toISOString() };
     if (name) updateData.name = name.trim();
     if (description !== undefined) updateData.description = description.trim();
-    if (isPrivate !== undefined) updateData.isPrivate = isPrivate;
-    if (maxParticipants) updateData.maxParticipants = maxParticipants;
+    if (isPrivate !== undefined) updateData.isPrivate = Boolean(isPrivate);
+    if (maxParticipants !== undefined) {
+      const parsedMaxParticipants = Number(maxParticipants);
+      if (Number.isNaN(parsedMaxParticipants) || parsedMaxParticipants < 2 || parsedMaxParticipants > 20) {
+        res.status(400).json({ success: false, error: 'La capacidad de la sala debe estar entre 2 y 20 participantes' });
+        return;
+      }
+      updateData.maxParticipants = parsedMaxParticipants;
+    }
 
     await db.collection(ROOMS_COLLECTION).doc(roomId).update(updateData);
 
@@ -187,7 +207,6 @@ export const getRoomMessages = async (req: AuthRequest, res: Response): Promise<
     const { roomId } = req.params;
     const limit = parseInt(req.query.limit as string) || 50;
 
-    // Verify room exists
     const roomDoc = await db.collection(ROOMS_COLLECTION).doc(roomId).get();
     if (!roomDoc.exists) {
       res.status(404).json({ success: false, error: 'Sala no encontrada' });
@@ -204,7 +223,7 @@ export const getRoomMessages = async (req: AuthRequest, res: Response): Promise<
 
     const messages = messagesSnapshot.docs
       .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .reverse(); // Oldest first
+      .reverse();
 
     res.json({ success: true, data: messages });
   } catch (error: any) {
