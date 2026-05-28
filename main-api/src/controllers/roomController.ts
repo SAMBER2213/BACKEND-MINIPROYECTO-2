@@ -72,11 +72,12 @@ export const listRooms = async (req: AuthRequest, res: Response): Promise<void> 
     const snapshot = await db
       .collection(ROOMS_COLLECTION)
       .where('isPrivate', '==', false)
-      .orderBy('createdAt', 'desc')
       .limit(limit)
       .get();
 
-    const rooms = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const rooms = snapshot.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .sort((a: any, b: any) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
 
     res.json({ success: true, data: rooms, total: rooms.length });
   } catch (error: any) {
@@ -92,13 +93,17 @@ export const getMyRooms = async (req: AuthRequest, res: Response): Promise<void>
   try {
     const uid = req.user!.uid;
 
+    // Firestore requiere un indice compuesto si se combina where(hostUid) con orderBy(createdAt).
+    // Para que el Sprint 2 funcione sin configurar indices manuales, se consulta por hostUid
+    // y se ordena en memoria por fecha de creacion.
     const snapshot = await db
       .collection(ROOMS_COLLECTION)
       .where('hostUid', '==', uid)
-      .orderBy('createdAt', 'desc')
       .get();
 
-    const rooms = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const rooms = snapshot.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .sort((a: any, b: any) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
 
     res.json({ success: true, data: rooms });
   } catch (error: any) {
