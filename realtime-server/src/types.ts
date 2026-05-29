@@ -21,7 +21,8 @@ export interface RoomState {
 
 export interface JoinRoomPayload {
   roomId: string;
-  token: string; // Firebase ID Token for auth
+  token: string;    // Firebase ID Token para autenticar
+  roomCode?: string; // Requerido si la sala es privada
 }
 
 export interface SendMessagePayload {

@@ -231,21 +231,28 @@ Usuario A (ya en sala)    Servidor Signaling    Usuario B (nuevo)
 
 ---
 
-## Sprint 0 — Checklist ✅
+## Desplegar reglas Firestore
 
-- [x] Repositorio estructurado con dos backends separados
-- [x] TypeScript configurado en ambos servicios
-- [x] Firebase Admin SDK integrado
-- [x] Middleware de autenticación con Firebase tokens
-- [x] CRUD completo de usuarios (Firestore + Firebase Auth)
-- [x] CRUD completo de salas de estudio
-- [x] Historial de mensajes desde Firestore
-- [x] WebSockets con Socket.io (chat en tiempo real)
-- [x] Signaling WebRTC (offer/answer/ICE)
-- [x] Control de estados A/V (mute, cámara, pantalla)
-- [x] Documentación Swagger/OpenAPI completa
-- [x] Variables de entorno con `.env.example`
-- [x] Manejo de errores consistente
-- [x] CORS configurado para Vercel/localhost
-- [x] Health checks en ambos servicios
-- [x] `.gitignore` configurado
+```bash
+# Desde la raíz del repo (donde está firestore.rules)
+npm install -g firebase-tools
+firebase login
+firebase use <tu-project-id>
+firebase deploy --only firestore
+```
+
+---
+
+## Sprint 2 — Checklist ✅
+
+- [x] US-04: Ver y editar perfil (GET + PUT /api/users/me) con validación de correo institucional
+- [x] US-05: Eliminar cuenta (DELETE /api/users/me) — Firestore + Firebase Auth
+- [x] US-06: Crear sala (POST /api/rooms) con ID único Firestore y roomCode
+- [x] US-06: Listar mis salas (GET /api/rooms/my) ordenadas por fecha
+- [x] TS-02: Servidor Node.js/Socket.io con join_room autenticado con Firebase token
+- [x] TS-02: Mensajes persistidos en Firestore y emitidos por WebSocket
+- [x] C4: Reglas Firestore en `firestore.rules` — solo usuarios autenticados con correo institucional
+- [x] C4: Índices Firestore en `firestore.indexes.json` para queries compuestas
+- [x] Swagger actualizado con roomCode, participantCount y endpoint /join/:roomCode
+- [x] Bug fix: validación de correo institucional también en PUT /api/users/me
+- [x] Endpoint extra: GET /api/rooms/join/:roomCode para unirse por código corto

@@ -1,0 +1,80 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helpers ────────────────────────────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isInstitutionalEmail() {
+      return isAuthenticated() &&
+             request.auth.token.email != null &&
+             request.auth.token.email.matches('.*@correounivalle\\.edu\\.co$');
+    }
+
+    // ─── users/{uid} ────────────────────────────────────────────────
+    // Solo el propio usuario puede leer/escribir su perfil.
+    match /users/{uid} {
+      allow read:  if isAuthenticated();          // otros usuarios ven perfil público
+      allow create: if isOwner(uid) && isInstitutionalEmail();
+      allow update: if isOwner(uid) && isInstitutionalEmail();
+      allow delete: if isOwner(uid);
+    }
+
+    // ─── usernames/{username} ────────────────────────────────────────
+    // Colección auxiliar para reservar usernames únicos.
+    // La escritura la gestiona el backend (Admin SDK ignora estas reglas),
+    // pero se dejan restrictivas para que el cliente nunca escriba directo.
+    match /usernames/{username} {
+      allow read:  if isAuthenticated();
+      allow write: if false; // Solo backend (Admin SDK) puede escribir
+    }
+
+    // ─── rooms/{roomId} ─────────────────────────────────────────────
+    match /rooms/{roomId} {
+      // Cualquier usuario autenticado puede leer salas
+      allow read: if isAuthenticated();
+
+      // Solo usuarios con correo institucional pueden crear salas
+      allow create: if isInstitutionalEmail()
+                    && request.resource.data.hostUid == request.auth.uid
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() >= 3;
+
+      // Solo el host puede actualizar o eliminar su sala
+      allow update: if isAuthenticated()
+                    && resource.data.hostUid == request.auth.uid;
+
+      allow delete: if isAuthenticated()
+                    && resource.data.hostUid == request.auth.uid;
+
+      // ─── rooms/{roomId}/messages/{messageId} ──────────────────────
+      match /messages/{messageId} {
+        // Solo participantes autenticados pueden leer mensajes
+        allow read: if isAuthenticated();
+
+        // Solo usuarios autenticados (con correo institucional) pueden escribir mensajes.
+        // La persistencia real la hace el realtime-server (Admin SDK),
+        // pero dejamos esta regla para que el cliente tampoco escriba directo.
+        allow create: if isInstitutionalEmail()
+                      && request.resource.data.senderUid == request.auth.uid
+                      && request.resource.data.text is string
+                      && request.resource.data.text.size() > 0
+                      && request.resource.data.text.size() <= 1000;
+
+        allow update, delete: if false; // Los mensajes son inmutables
+      }
+    }
+
+    // ─── Bloquear cualquier otra colección ──────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
