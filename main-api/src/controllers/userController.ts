@@ -189,6 +189,11 @@ export const updateMyProfile = async (req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    if (!isInstitutionalEmail(req.user!.email)) {
+      res.status(400).json({ success: false, error: `Usa tu correo institucional ${INSTITUTIONAL_DOMAIN}` });
+      return;
+    }
+
     const userDocRef = db.collection(USERS_COLLECTION).doc(uid);
     const usernameDocRef = db.collection(USERNAMES_COLLECTION).doc(username);
 

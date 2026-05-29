@@ -5,6 +5,7 @@ import {
   listRooms,
   getMyRooms,
   getRoomById,
+  getRoomByCode,
   updateRoom,
   deleteRoom,
   getRoomMessages,
@@ -61,6 +62,34 @@ router.get('/', verifyToken, listRooms);
  *         description: Salas del usuario
  */
 router.get('/my', verifyToken, getMyRooms);
+
+/**
+ * @swagger
+ * /api/rooms/join/{roomCode}:
+ *   get:
+ *     summary: Buscar sala por código corto
+ *     description: Devuelve el ID y datos de la sala correspondiente al roomCode. Usado para unirse mediante el código de 8 caracteres.
+ *     tags: [Rooms]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: roomCode
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: ABCD1234
+ *     responses:
+ *       200:
+ *         description: Sala encontrada
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Room'
+ *       404:
+ *         description: No existe sala con ese código
+ */
+router.get('/join/:roomCode', verifyToken, getRoomByCode);
 
 /**
  * @swagger

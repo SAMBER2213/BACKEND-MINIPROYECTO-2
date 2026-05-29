@@ -72,12 +72,11 @@ export const listRooms = async (req: AuthRequest, res: Response): Promise<void> 
     const snapshot = await db
       .collection(ROOMS_COLLECTION)
       .where('isPrivate', '==', false)
+      .orderBy('createdAt', 'desc')
       .limit(limit)
       .get();
 
-    const rooms = snapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .sort((a: any, b: any) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    const rooms = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
     res.json({ success: true, data: rooms, total: rooms.length });
   } catch (error: any) {
@@ -93,17 +92,14 @@ export const getMyRooms = async (req: AuthRequest, res: Response): Promise<void>
   try {
     const uid = req.user!.uid;
 
-    // Firestore requiere un indice compuesto si se combina where(hostUid) con orderBy(createdAt).
-    // Para que el Sprint 2 funcione sin configurar indices manuales, se consulta por hostUid
-    // y se ordena en memoria por fecha de creacion.
+    // Usa el índice compuesto (hostUid ASC + createdAt DESC) definido en firestore.indexes.json
     const snapshot = await db
       .collection(ROOMS_COLLECTION)
       .where('hostUid', '==', uid)
+      .orderBy('createdAt', 'desc')
       .get();
 
-    const rooms = snapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
-      .sort((a: any, b: any) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    const rooms = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
     res.json({ success: true, data: rooms });
   } catch (error: any) {
@@ -198,6 +194,38 @@ export const deleteRoom = async (req: AuthRequest, res: Response): Promise<void>
     await db.collection(ROOMS_COLLECTION).doc(roomId).delete();
 
     res.json({ success: true, message: 'Sala eliminada correctamente' });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * GET /api/rooms/join/:roomCode
+ * Busca una sala por su roomCode (código corto) y devuelve su ID y datos.
+ * Usado por el frontend para que el usuario pegue el código y sea redirigido.
+ */
+export const getRoomByCode = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { roomCode } = req.params;
+
+    if (!roomCode || roomCode.trim().length === 0) {
+      res.status(400).json({ success: false, error: 'roomCode es requerido' });
+      return;
+    }
+
+    const snapshot = await db
+      .collection(ROOMS_COLLECTION)
+      .where('roomCode', '==', roomCode.toUpperCase().trim())
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      res.status(404).json({ success: false, error: 'No existe ninguna sala con ese código' });
+      return;
+    }
+
+    const doc = snapshot.docs[0];
+    res.json({ success: true, data: { id: doc.id, ...doc.data() } });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

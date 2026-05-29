@@ -31,7 +31,7 @@ export const registerRoomHandlers = (
    * El cliente debe enviar su Firebase ID Token para autenticarse.
    */
   socket.on('join_room', async (payload: JoinRoomPayload) => {
-    const { roomId, token } = payload;
+    const { roomId, token, roomCode } = payload;
 
     if (!roomId || !token) {
       socket.emit('error', { message: 'roomId y token son requeridos' });
@@ -60,6 +60,17 @@ export const registerRoomHandlers = (
         return;
       }
 
+      const roomData = roomDoc.data()!;
+
+      // Si la sala es privada, solo el host puede entrar directamente por roomId.
+      // Cualquier otro usuario debe unirse por roomCode (validado en el frontend).
+      if (roomData.isPrivate && roomData.hostUid !== decoded.uid) {
+        if (!roomCode || roomCode.toUpperCase().trim() !== roomData.roomCode) {
+          socket.emit('error', { message: 'Esta sala es privada. El código de sala es incorrecto.' });
+          return;
+        }
+      }
+
       if (!rooms.has(roomId)) {
         rooms.set(roomId, {
           roomId,
@@ -68,7 +79,7 @@ export const registerRoomHandlers = (
       }
 
       const room = rooms.get(roomId)!;
-      const maxParticipants = roomDoc.data()!.maxParticipants ?? 10;
+      const maxParticipants = roomData.maxParticipants ?? 10;
       if (room.participants.size >= maxParticipants && !room.participants.has(decoded.uid)) {
         socket.emit('error', { message: 'La sala está llena' });
         return;
@@ -97,7 +108,7 @@ export const registerRoomHandlers = (
         roomId,
         user: userInfo,
         participants: participantsList,
-        room: roomDoc.data(),
+        room: roomData,
       });
 
       socket.to(roomId).emit('participant_joined', {
