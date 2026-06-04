@@ -126,7 +126,7 @@ Abre tu navegador en: **http://localhost:3001/api/docs**
 |--------|---------|-------------|
 | `join_room` | `{ roomId, token }` | Entrar a una sala (autenticado) |
 | `leave_room` | `{ roomId }` | Salir de una sala |
-| `send_message` | `{ roomId, text }` | Enviar mensaje de chat |
+| `send_message` | `{ roomId, text, clientMessageId? }` | Enviar mensaje de chat en tiempo real |
 | `media_state_change` | `{ roomId, isMuted, isCameraOff }` | Cambiar estado A/V |
 | `screen_share_change` | `{ roomId, isSharingScreen }` | Compartir/dejar de compartir pantalla |
 | `webrtc_offer` | `{ roomId, targetSocketId, sdp }` | Oferta SDP WebRTC |
@@ -140,7 +140,10 @@ Abre tu navegador en: **http://localhost:3001/api/docs**
 | `room_joined` | Confirmación de entrada + lista de participantes |
 | `participant_joined` | Nuevo participante en la sala |
 | `participant_left` | Participante salió |
-| `new_message` | Nuevo mensaje de chat |
+| `new_message` | Nuevo mensaje de chat emitido a todos los sockets de la sala |
+| `message_saved` | Confirmación de persistencia del mensaje en Firestore |
+| `message_failed` | El mensaje se entregó por WebSocket, pero no se pudo guardar |
+| `chat_error` | Error específico del flujo de chat |
 | `media_state_update` | Estado A/V de un participante cambió |
 | `error` | Error del servidor |
 
@@ -242,6 +245,14 @@ firebase deploy --only firestore
 ```
 
 ---
+
+## Sprint 3 / C2 — Chat tiempo real ✅
+
+- [x] US-10: `send_message` valida usuario autenticado y pertenencia a la sala.
+- [x] US-10: `new_message` se emite inmediatamente con `io.to(roomId)` a todos los clientes conectados a esa misma sala.
+- [x] US-10: La entrega WebSocket no queda bloqueada por Firestore; la persistencia se confirma con `message_saved`.
+- [x] US-10: Errores de conexión/envío se reportan con `chat_error`, `message_failed` y `error` para retrocompatibilidad.
+- [x] Evidencia esperada: dos navegadores/usuarios en la misma sala reciben el mensaje al instante.
 
 ## Sprint 2 — Checklist ✅
 

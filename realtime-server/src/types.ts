@@ -28,6 +28,7 @@ export interface JoinRoomPayload {
 export interface SendMessagePayload {
   roomId: string;
   text: string;
+  clientMessageId?: string;
 }
 
 export interface MediaStatePayload {
@@ -76,6 +77,7 @@ export interface ParticipantLeftPayload {
 
 export interface NewMessagePayload {
   id: string;
+  clientMessageId?: string;
   roomId: string;
   senderUid: string;
   senderName: string;

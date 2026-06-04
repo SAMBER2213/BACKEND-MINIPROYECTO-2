@@ -8,11 +8,23 @@ import {
 } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
+function emitChatError(socket: Socket, message: string): void {
+  // chat_error es específico para la UI del chat; error se mantiene por compatibilidad.
+  socket.emit('chat_error', { message });
+  socket.emit('error', { message });
+}
+
+function normalizeMessageText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
 /**
  * Maneja los eventos de chat en tiempo real.
  * - Recibe mensajes del cliente
- * - Los persiste en Firestore (colección rooms/{roomId}/messages)
- * - Los emite a todos los participantes de la sala
+ * - Valida que el socket esté autenticado y unido a la sala
+ * - Emite inmediatamente el mensaje a todos los sockets dentro de la misma sala
+ * - Persiste el mensaje en Firestore en segundo plano para el historial
  */
 export const registerChatHandlers = (
   io: Server,
@@ -23,59 +35,73 @@ export const registerChatHandlers = (
 
   /**
    * Evento: 'send_message'
-   * Envía un mensaje de chat a la sala.
+   * Envía un mensaje de chat a todos los participantes de la sala.
    */
-  socket.on('send_message', async (payload: SendMessagePayload) => {
-    const { roomId, text } = payload;
+  socket.on('send_message', (payload: SendMessagePayload) => {
+    const roomId = typeof payload?.roomId === 'string' ? payload.roomId.trim() : '';
+    const text = normalizeMessageText(payload?.text);
     const user = socketUserMap.get(socket.id);
 
     if (!user) {
-      socket.emit('error', { message: 'Usuario no autenticado en la sala' });
+      emitChatError(socket, 'Usuario no autenticado en la sala');
       return;
     }
 
-    if (!text || text.trim().length === 0) {
-      socket.emit('error', { message: 'El mensaje no puede estar vacío' });
+    if (!roomId) {
+      emitChatError(socket, 'roomId es requerido para enviar mensajes');
       return;
     }
 
-    if (text.trim().length > 1000) {
-      socket.emit('error', { message: 'El mensaje es demasiado largo (máx. 1000 caracteres)' });
+    if (!text) {
+      emitChatError(socket, 'El mensaje no puede estar vacío');
+      return;
+    }
+
+    if (text.length > 1000) {
+      emitChatError(socket, 'El mensaje es demasiado largo (máx. 1000 caracteres)');
       return;
     }
 
     const room = rooms.get(roomId);
-    if (!room || !room.participants.has(user.uid)) {
-      socket.emit('error', { message: 'No estás en esta sala' });
+    const userInRoom = room?.participants.get(user.uid);
+
+    if (!room || !userInRoom || userInRoom.socketId !== socket.id || !socket.rooms.has(roomId)) {
+      emitChatError(socket, 'No estás en esta sala');
       return;
     }
 
-    try {
-      const messageId = uuidv4();
-      const message: NewMessagePayload = {
-        id: messageId,
-        roomId,
-        senderUid: user.uid,
-        senderName: user.displayName,
-        senderPhotoURL: user.photoURL,
-        text: text.trim(),
-        createdAt: new Date().toISOString(),
-      };
+    const messageId = uuidv4();
+    const message: NewMessagePayload = {
+      id: messageId,
+      clientMessageId: payload?.clientMessageId,
+      roomId,
+      senderUid: user.uid,
+      senderName: user.displayName,
+      senderPhotoURL: user.photoURL,
+      text,
+      createdAt: new Date().toISOString(),
+    };
 
-      // Persist to Firestore
-      await db
-        .collection('rooms')
-        .doc(roomId)
-        .collection('messages')
-        .doc(messageId)
-        .set(message);
+    // C2: broadcast inmediato por WebSockets a todos los usuarios de la misma sala.
+    io.to(roomId).emit('new_message', message);
 
-      // Broadcast to all participants in the room (including sender)
-      io.to(roomId).emit('new_message', message);
-
-    } catch (error) {
-      console.error('[Chat] Error guardando mensaje:', error);
-      socket.emit('error', { message: 'Error al enviar el mensaje' });
-    }
+    // C3 queda preparado: persistencia en Firestore sin bloquear la entrega instantánea.
+    db
+      .collection('rooms')
+      .doc(roomId)
+      .collection('messages')
+      .doc(messageId)
+      .set(message)
+      .then(() => {
+        socket.emit('message_saved', { id: messageId, clientMessageId: payload?.clientMessageId });
+      })
+      .catch((error) => {
+        console.error('[Chat] Error guardando mensaje:', error);
+        socket.emit('message_failed', {
+          id: messageId,
+          clientMessageId: payload?.clientMessageId,
+          message: 'El mensaje se entregó en tiempo real, pero no se pudo guardar en Firestore.',
+        });
+      });
   });
 };
