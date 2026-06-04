@@ -84,6 +84,8 @@ export interface NewMessagePayload {
   senderPhotoURL: string | null;
   text: string;
   createdAt: string;
+  persistedAt: string;
+  storagePath: string;
 }
 
 export interface MediaStateUpdatePayload {

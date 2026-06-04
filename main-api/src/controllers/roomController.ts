@@ -19,6 +19,24 @@ function normalizeRoomCode(value: string): string {
   return value.replace(/\s+/g, '').toUpperCase();
 }
 
+function parseMessageLimit(value: unknown): number {
+  const parsed = Number(value ?? 50);
+  if (!Number.isInteger(parsed) || parsed < 1) return 50;
+  return Math.min(parsed, 100);
+}
+
+function getProvidedRoomCode(req: AuthRequest): string {
+  const queryCode = typeof req.query.roomCode === 'string' ? req.query.roomCode : '';
+  const headerCode = typeof req.headers['x-room-code'] === 'string' ? req.headers['x-room-code'] : '';
+  return normalizeRoomCode(queryCode || headerCode);
+}
+
+function canReadRoomHistory(roomData: FirebaseFirestore.DocumentData, uid: string, providedRoomCode: string): boolean {
+  if (!roomData.isPrivate) return true;
+  if (roomData.hostUid === uid) return true;
+  return Boolean(providedRoomCode && providedRoomCode === roomData.roomCode);
+}
+
 function getStringField(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   return value.trim();
@@ -410,18 +428,28 @@ export const getRoomByCode = async (req: AuthRequest, res: Response): Promise<vo
  */
 export const getRoomMessages = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const uid = req.user!.uid;
     const { roomId } = req.params;
-    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const limit = parseMessageLimit(req.query.limit);
+    const providedRoomCode = getProvidedRoomCode(req);
 
-    const roomDoc = await db.collection(ROOMS_COLLECTION).doc(roomId).get();
+    const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
+    const roomDoc = await roomRef.get();
     if (!roomDoc.exists) {
       res.status(404).json({ success: false, error: 'Sala no encontrada' });
       return;
     }
 
-    const messagesSnapshot = await db
-      .collection(ROOMS_COLLECTION)
-      .doc(roomId)
+    const roomData = roomDoc.data()!;
+    if (!canReadRoomHistory(roomData, uid, providedRoomCode)) {
+      res.status(403).json({
+        success: false,
+        error: 'No tienes permiso para leer el historial de esta sala privada. Ingresa con el codigo valido.',
+      });
+      return;
+    }
+
+    const messagesSnapshot = await roomRef
       .collection('messages')
       .orderBy('createdAt', 'desc')
       .limit(limit)
@@ -431,7 +459,16 @@ export const getRoomMessages = async (req: AuthRequest, res: Response): Promise<
       .map((messageDoc) => ({ id: messageDoc.id, ...messageDoc.data() }))
       .reverse();
 
-    res.json({ success: true, data: messages });
+    res.json({
+      success: true,
+      data: messages,
+      meta: {
+        roomId,
+        count: messages.length,
+        limit,
+        source: 'Firestore',
+      },
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

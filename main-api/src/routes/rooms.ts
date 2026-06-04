@@ -229,8 +229,8 @@ router.delete('/:roomId', verifyToken, deleteRoom);
  * @swagger
  * /api/rooms/{roomId}/messages:
  *   get:
- *     summary: Historial de mensajes
- *     description: Obtiene el historial de mensajes de una sala (máx. 50 últimos por defecto).
+ *     summary: Historial de mensajes persistente
+ *     description: Recupera desde Firestore los ultimos mensajes persistidos de una sala. En salas privadas, los invitados deben enviar el codigo validado en query param roomCode.
  *     tags: [Rooms]
  *     security:
  *       - BearerAuth: []
@@ -245,6 +245,15 @@ router.delete('/:roomId', verifyToken, deleteRoom);
  *         schema:
  *           type: integer
  *           default: 50
+ *           minimum: 1
+ *           maximum: 100
+ *         description: Numero maximo de mensajes a recuperar
+ *       - in: query
+ *         name: roomCode
+ *         schema:
+ *           type: string
+ *           example: ABCD1234
+ *         description: Codigo corto requerido para invitados en salas privadas
  *     responses:
  *       200:
  *         description: Historial de mensajes
@@ -259,6 +268,8 @@ router.delete('/:roomId', verifyToken, deleteRoom);
  *                   type: array
  *                   items:
  *                     $ref: '#/components/schemas/Message'
+ *       403:
+ *         description: El usuario no tiene permiso para leer el historial de una sala privada
  *       404:
  *         description: Sala no encontrada
  */

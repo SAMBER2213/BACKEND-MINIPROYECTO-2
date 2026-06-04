@@ -96,8 +96,11 @@ Authorization: Bearer <firebase-id-token>
             senderUid: { type: 'string' },
             senderName: { type: 'string' },
             senderPhotoURL: { type: 'string', nullable: true },
+            clientMessageId: { type: 'string', nullable: true, description: 'ID temporal enviado por el cliente para evitar duplicados en UI' },
             text: { type: 'string' },
             createdAt: { type: 'string', format: 'date-time' },
+            persistedAt: { type: 'string', format: 'date-time', description: 'Fecha en la que el realtime-server guardo el mensaje en Firestore' },
+            storagePath: { type: 'string', example: 'rooms/room123/messages/msg123', description: 'Ruta del documento guardado en Firestore' },
           },
         },
         Error: {
