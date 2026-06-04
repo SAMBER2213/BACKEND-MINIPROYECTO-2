@@ -83,6 +83,7 @@ Authorization: Bearer <firebase-id-token>
             isPrivate: { type: 'boolean', default: false },
             maxParticipants: { type: 'integer', example: 10, minimum: 2, maximum: 20 },
             participantCount: { type: 'integer', example: 0, description: 'Participantes activos (actualizado por el realtime-server)' },
+            isHost: { type: 'boolean', example: true, description: 'Indica si el usuario autenticado es el anfitrión de la sala' },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },
           },

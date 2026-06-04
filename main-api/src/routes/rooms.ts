@@ -65,20 +65,21 @@ router.get('/my', verifyToken, getMyRooms);
 
 /**
  * @swagger
- * /api/rooms/join/{roomCode}:
+ * /api/rooms/join/{roomKey}:
  *   get:
- *     summary: Buscar sala por código corto
- *     description: Devuelve el ID y datos de la sala correspondiente al roomCode. Usado para unirse mediante el código de 8 caracteres.
+ *     summary: Buscar sala para unirse por ID o código
+ *     description: Devuelve el ID y los datos de una sala usando el código corto compartido o el ID del documento. Para salas privadas, los invitados deben usar el código corto válido.
  *     tags: [Rooms]
  *     security:
  *       - BearerAuth: []
  *     parameters:
  *       - in: path
- *         name: roomCode
+ *         name: roomKey
  *         required: true
  *         schema:
  *           type: string
  *           example: ABCD1234
+ *         description: Código corto roomCode o ID Firestore de la sala
  *     responses:
  *       200:
  *         description: Sala encontrada
@@ -86,8 +87,10 @@ router.get('/my', verifyToken, getMyRooms);
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Room'
+ *       403:
+ *         description: La sala privada requiere código corto válido
  *       404:
- *         description: No existe sala con ese código
+ *         description: No existe sala con ese ID o código
  */
 router.get('/join/:roomCode', verifyToken, getRoomByCode);
 
@@ -136,7 +139,7 @@ router.post('/', verifyToken, createRoom);
  * /api/rooms/{roomId}:
  *   get:
  *     summary: Obtener sala por ID
- *     description: Obtiene los detalles completos de una sala específica.
+ *     description: Obtiene los detalles de una sala específica. En salas privadas el roomCode solo se devuelve al anfitrión o al usuario que ya lo validó por /join.
  *     tags: [Rooms]
  *     security:
  *       - BearerAuth: []
@@ -189,7 +192,7 @@ router.get('/:roomId', verifyToken, getRoomById);
  *                 type: integer
  *     responses:
  *       200:
- *         description: Sala actualizada
+ *         description: Sala actualizada con datos completos
  *       403:
  *         description: Solo el anfitrión puede editar
  *       404:

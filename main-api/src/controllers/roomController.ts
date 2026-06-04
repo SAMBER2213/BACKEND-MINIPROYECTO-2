@@ -3,9 +3,109 @@ import { db } from '../config/firebase';
 import { AuthRequest } from '../middleware/auth';
 
 const ROOMS_COLLECTION = 'rooms';
+const MIN_PARTICIPANTS = 2;
+const MAX_PARTICIPANTS = 20;
+const MAX_DESCRIPTION_LENGTH = 300;
 
 function buildRoomCode(roomId: string): string {
   return roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
+}
+
+function normalizeRoomKey(value: string): string {
+  return value.trim();
+}
+
+function normalizeRoomCode(value: string): string {
+  return value.replace(/\s+/g, '').toUpperCase();
+}
+
+function getStringField(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.trim();
+}
+
+function validateBooleanField(value: unknown, fieldName: string): string | null {
+  if (value === undefined || typeof value === 'boolean') return null;
+  return `${fieldName} debe ser booleano`;
+}
+
+function validateRoomName(name: unknown, required: boolean): { value?: string; error?: string } {
+  const cleanName = getStringField(name);
+
+  if (!cleanName) {
+    return required || name !== undefined
+      ? { error: 'El nombre de la sala debe tener al menos 3 caracteres' }
+      : {};
+  }
+
+  if (cleanName.length < 3) {
+    return { error: 'El nombre de la sala debe tener al menos 3 caracteres' };
+  }
+
+  return { value: cleanName };
+}
+
+function validateDescription(description: unknown): { value?: string; error?: string } {
+  if (description === undefined) return {};
+  if (typeof description !== 'string') return { error: 'La descripción debe ser texto' };
+
+  const cleanDescription = description.trim();
+  if (cleanDescription.length > MAX_DESCRIPTION_LENGTH) {
+    return { error: `La descripción no puede superar ${MAX_DESCRIPTION_LENGTH} caracteres` };
+  }
+
+  return { value: cleanDescription };
+}
+
+function validateMaxParticipants(maxParticipants: unknown): { value?: number; error?: string } {
+  if (maxParticipants === undefined) return {};
+
+  const parsedMaxParticipants = Number(maxParticipants);
+  if (
+    !Number.isInteger(parsedMaxParticipants) ||
+    parsedMaxParticipants < MIN_PARTICIPANTS ||
+    parsedMaxParticipants > MAX_PARTICIPANTS
+  ) {
+    return { error: `La capacidad de la sala debe estar entre ${MIN_PARTICIPANTS} y ${MAX_PARTICIPANTS} participantes` };
+  }
+
+  return { value: parsedMaxParticipants };
+}
+
+function buildSafeRoomResponse(
+  doc: FirebaseFirestore.DocumentSnapshot,
+  requesterUid: string,
+  revealRoomCode = false
+): Record<string, any> {
+  const data = doc.data() ?? {};
+  const isHost = data.hostUid === requesterUid;
+  const room: Record<string, any> = {
+    id: doc.id,
+    ...data,
+    isHost,
+  };
+
+  // En salas privadas el código solo se muestra al anfitrión o al usuario que ya lo validó por /join.
+  if (room.isPrivate && !isHost && !revealRoomCode) {
+    delete room.roomCode;
+  }
+
+  return room;
+}
+
+async function deleteRoomDocumentAndMessages(roomId: string): Promise<void> {
+  const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
+  const messagesRef = roomRef.collection('messages');
+  let snapshot = await messagesRef.limit(500).get();
+
+  while (!snapshot.empty) {
+    const batch = db.batch();
+    snapshot.docs.forEach((messageDoc) => batch.delete(messageDoc.ref));
+    await batch.commit();
+    snapshot = await messagesRef.limit(500).get();
+  }
+
+  await roomRef.delete();
 }
 
 /**
@@ -17,14 +117,27 @@ export const createRoom = async (req: AuthRequest, res: Response): Promise<void>
     const uid = req.user!.uid;
     const { name, description, isPrivate, maxParticipants } = req.body;
 
-    if (!name || name.trim().length < 3) {
-      res.status(400).json({ success: false, error: 'El nombre de la sala debe tener al menos 3 caracteres' });
+    const nameValidation = validateRoomName(name, true);
+    if (nameValidation.error) {
+      res.status(400).json({ success: false, error: nameValidation.error });
       return;
     }
 
-    const parsedMaxParticipants = Number(maxParticipants ?? 10);
-    if (Number.isNaN(parsedMaxParticipants) || parsedMaxParticipants < 2 || parsedMaxParticipants > 20) {
-      res.status(400).json({ success: false, error: 'La capacidad de la sala debe estar entre 2 y 20 participantes' });
+    const descriptionValidation = validateDescription(description ?? '');
+    if (descriptionValidation.error) {
+      res.status(400).json({ success: false, error: descriptionValidation.error });
+      return;
+    }
+
+    const privateValidationError = validateBooleanField(isPrivate, 'isPrivate');
+    if (privateValidationError) {
+      res.status(400).json({ success: false, error: privateValidationError });
+      return;
+    }
+
+    const maxParticipantsValidation = validateMaxParticipants(maxParticipants ?? 10);
+    if (maxParticipantsValidation.error) {
+      res.status(400).json({ success: false, error: maxParticipantsValidation.error });
       return;
     }
 
@@ -36,14 +149,14 @@ export const createRoom = async (req: AuthRequest, res: Response): Promise<void>
     const roomCode = buildRoomCode(docRef.id);
 
     const roomData = {
-      name: name.trim(),
-      description: description?.trim() ?? '',
+      name: nameValidation.value!,
+      description: descriptionValidation.value ?? '',
       roomCode,
       hostUid: uid,
       hostName,
       hostRole: 'Administrador',
       isPrivate: Boolean(isPrivate),
-      maxParticipants: parsedMaxParticipants,
+      maxParticipants: maxParticipantsValidation.value ?? 10,
       participantCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -54,7 +167,7 @@ export const createRoom = async (req: AuthRequest, res: Response): Promise<void>
     res.status(201).json({
       success: true,
       message: 'Sala creada exitosamente',
-      data: { id: docRef.id, ...roomData },
+      data: { id: docRef.id, ...roomData, isHost: true },
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -67,7 +180,8 @@ export const createRoom = async (req: AuthRequest, res: Response): Promise<void>
  */
 export const listRooms = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const limit = parseInt(req.query.limit as string) || 20;
+    const uid = req.user!.uid;
+    const limit = parseInt(req.query.limit as string, 10) || 20;
 
     const snapshot = await db
       .collection(ROOMS_COLLECTION)
@@ -76,7 +190,7 @@ export const listRooms = async (req: AuthRequest, res: Response): Promise<void> 
       .limit(limit)
       .get();
 
-    const rooms = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const rooms = snapshot.docs.map((doc) => buildSafeRoomResponse(doc, uid, true));
 
     res.json({ success: true, data: rooms, total: rooms.length });
   } catch (error: any) {
@@ -92,14 +206,14 @@ export const getMyRooms = async (req: AuthRequest, res: Response): Promise<void>
   try {
     const uid = req.user!.uid;
 
-    // Usa el índice compuesto (hostUid ASC + createdAt DESC) definido en firestore.indexes.json
+    // Usa el índice compuesto (hostUid ASC + createdAt DESC) definido en firestore.indexes.json.
     const snapshot = await db
       .collection(ROOMS_COLLECTION)
       .where('hostUid', '==', uid)
       .orderBy('createdAt', 'desc')
       .get();
 
-    const rooms = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const rooms = snapshot.docs.map((doc) => buildSafeRoomResponse(doc, uid, true));
 
     res.json({ success: true, data: rooms });
   } catch (error: any) {
@@ -113,6 +227,7 @@ export const getMyRooms = async (req: AuthRequest, res: Response): Promise<void>
  */
 export const getRoomById = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const uid = req.user!.uid;
     const { roomId } = req.params;
     const doc = await db.collection(ROOMS_COLLECTION).doc(roomId).get();
 
@@ -121,7 +236,7 @@ export const getRoomById = async (req: AuthRequest, res: Response): Promise<void
       return;
     }
 
-    res.json({ success: true, data: { id: doc.id, ...doc.data() } });
+    res.json({ success: true, data: buildSafeRoomResponse(doc, uid) });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -137,34 +252,73 @@ export const updateRoom = async (req: AuthRequest, res: Response): Promise<void>
     const { roomId } = req.params;
     const { name, description, isPrivate, maxParticipants } = req.body;
 
-    const doc = await db.collection(ROOMS_COLLECTION).doc(roomId).get();
+    const roomRef = db.collection(ROOMS_COLLECTION).doc(roomId);
+    const doc = await roomRef.get();
 
     if (!doc.exists) {
       res.status(404).json({ success: false, error: 'Sala no encontrada' });
       return;
     }
 
-    if (doc.data()!.hostUid !== uid) {
+    const currentRoom = doc.data()!;
+    if (currentRoom.hostUid !== uid) {
       res.status(403).json({ success: false, error: 'Solo el anfitrión puede editar la sala' });
       return;
     }
 
-    const updateData: Record<string, any> = { updatedAt: new Date().toISOString() };
-    if (name) updateData.name = name.trim();
-    if (description !== undefined) updateData.description = description.trim();
-    if (isPrivate !== undefined) updateData.isPrivate = Boolean(isPrivate);
-    if (maxParticipants !== undefined) {
-      const parsedMaxParticipants = Number(maxParticipants);
-      if (Number.isNaN(parsedMaxParticipants) || parsedMaxParticipants < 2 || parsedMaxParticipants > 20) {
-        res.status(400).json({ success: false, error: 'La capacidad de la sala debe estar entre 2 y 20 participantes' });
-        return;
-      }
-      updateData.maxParticipants = parsedMaxParticipants;
+    if (name === undefined && description === undefined && isPrivate === undefined && maxParticipants === undefined) {
+      res.status(400).json({ success: false, error: 'Envía al menos un campo para actualizar' });
+      return;
     }
 
-    await db.collection(ROOMS_COLLECTION).doc(roomId).update(updateData);
+    const updateData: Record<string, any> = { updatedAt: new Date().toISOString() };
 
-    res.json({ success: true, message: 'Sala actualizada', data: updateData });
+    const nameValidation = validateRoomName(name, false);
+    if (nameValidation.error) {
+      res.status(400).json({ success: false, error: nameValidation.error });
+      return;
+    }
+    if (nameValidation.value !== undefined) updateData.name = nameValidation.value;
+
+    const descriptionValidation = validateDescription(description);
+    if (descriptionValidation.error) {
+      res.status(400).json({ success: false, error: descriptionValidation.error });
+      return;
+    }
+    if (descriptionValidation.value !== undefined) updateData.description = descriptionValidation.value;
+
+    const privateValidationError = validateBooleanField(isPrivate, 'isPrivate');
+    if (privateValidationError) {
+      res.status(400).json({ success: false, error: privateValidationError });
+      return;
+    }
+    if (isPrivate !== undefined) updateData.isPrivate = isPrivate;
+
+    const maxParticipantsValidation = validateMaxParticipants(maxParticipants);
+    if (maxParticipantsValidation.error) {
+      res.status(400).json({ success: false, error: maxParticipantsValidation.error });
+      return;
+    }
+    if (maxParticipantsValidation.value !== undefined) {
+      const currentParticipants = Number(currentRoom.participantCount ?? 0);
+      if (maxParticipantsValidation.value < currentParticipants) {
+        res.status(400).json({
+          success: false,
+          error: `No puedes bajar la capacidad por debajo de los ${currentParticipants} participantes conectados`,
+        });
+        return;
+      }
+      updateData.maxParticipants = maxParticipantsValidation.value;
+    }
+
+    await roomRef.update(updateData);
+    const updatedDoc = await roomRef.get();
+
+    res.json({
+      success: true,
+      message: 'Sala actualizada correctamente',
+      data: buildSafeRoomResponse(updatedDoc, uid, true),
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -191,7 +345,7 @@ export const deleteRoom = async (req: AuthRequest, res: Response): Promise<void>
       return;
     }
 
-    await db.collection(ROOMS_COLLECTION).doc(roomId).delete();
+    await deleteRoomDocumentAndMessages(roomId);
 
     res.json({ success: true, message: 'Sala eliminada correctamente' });
   } catch (error: any) {
@@ -201,31 +355,50 @@ export const deleteRoom = async (req: AuthRequest, res: Response): Promise<void>
 
 /**
  * GET /api/rooms/join/:roomCode
- * Busca una sala por su roomCode (código corto) y devuelve su ID y datos.
- * Usado por el frontend para que el usuario pegue el código y sea redirigido.
+ * Busca una sala por su roomCode (código corto) o por su ID de documento.
+ * Usado por el frontend para que el usuario pegue el código/ID y sea redirigido.
  */
 export const getRoomByCode = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { roomCode } = req.params;
+    const uid = req.user!.uid;
+    const roomKey = normalizeRoomKey(req.params.roomCode ?? '');
+    const roomCode = normalizeRoomCode(roomKey);
 
-    if (!roomCode || roomCode.trim().length === 0) {
-      res.status(400).json({ success: false, error: 'roomCode es requerido' });
+    if (!roomKey) {
+      res.status(400).json({ success: false, error: 'ID o código de sala requerido' });
       return;
     }
 
-    const snapshot = await db
+    let doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot | null = null;
+    let matchedByRoomCode = false;
+
+    const codeSnapshot = await db
       .collection(ROOMS_COLLECTION)
-      .where('roomCode', '==', roomCode.toUpperCase().trim())
+      .where('roomCode', '==', roomCode)
       .limit(1)
       .get();
 
-    if (snapshot.empty) {
-      res.status(404).json({ success: false, error: 'No existe ninguna sala con ese código' });
+    if (!codeSnapshot.empty) {
+      doc = codeSnapshot.docs[0];
+      matchedByRoomCode = true;
+    } else {
+      const docById = await db.collection(ROOMS_COLLECTION).doc(roomKey).get();
+      if (docById.exists) doc = docById;
+    }
+
+    if (!doc || !doc.exists) {
+      res.status(404).json({ success: false, error: 'No existe ninguna sala con ese ID o código' });
       return;
     }
 
-    const doc = snapshot.docs[0];
-    res.json({ success: true, data: { id: doc.id, ...doc.data() } });
+    const roomData = doc.data()!;
+    const isHost = roomData.hostUid === uid;
+    if (roomData.isPrivate && !isHost && !matchedByRoomCode) {
+      res.status(403).json({ success: false, error: 'Esta sala es privada. Ingresa el código corto compartido por el anfitrión.' });
+      return;
+    }
+
+    res.json({ success: true, data: buildSafeRoomResponse(doc, uid, matchedByRoomCode || isHost) });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -238,7 +411,7 @@ export const getRoomByCode = async (req: AuthRequest, res: Response): Promise<vo
 export const getRoomMessages = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { roomId } = req.params;
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = parseInt(req.query.limit as string, 10) || 50;
 
     const roomDoc = await db.collection(ROOMS_COLLECTION).doc(roomId).get();
     if (!roomDoc.exists) {
@@ -255,7 +428,7 @@ export const getRoomMessages = async (req: AuthRequest, res: Response): Promise<
       .get();
 
     const messages = messagesSnapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .map((messageDoc) => ({ id: messageDoc.id, ...messageDoc.data() }))
       .reverse();
 
     res.json({ success: true, data: messages });
