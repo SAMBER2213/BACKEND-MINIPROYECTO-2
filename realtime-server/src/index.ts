@@ -3,39 +3,61 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
-// Sprint 4: PeerJS server para señalización WebRTC P2P
 import { ExpressPeerServer } from 'peer';
 
-// Import handlers
 import { registerRoomHandlers }   from './handlers/roomHandler';
 import { registerChatHandlers }   from './handlers/chatHandler';
 import { registerWebRTCHandlers, buildIceServers } from './handlers/webrtcHandler';
 
-// Import types
 import { RoomState, UserInfo } from './types';
 
 dotenv.config();
 
-const PORT          = Number(process.env.PORT ?? 3002);
-const FRONTEND_URL  = process.env.FRONTEND_URL ?? 'http://localhost:5173';
-const PEERJS_PATH   = process.env.PEERJS_PATH ?? '/peerjs';
+const PORT         = Number(process.env.PORT ?? 3002);
+const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+const PEERJS_PATH  = process.env.PEERJS_PATH ?? '/peerjs';
+
+// Lista de orígenes permitidos — incluye la URL de Vercel configurada en FRONTEND_URL
+const ALLOWED_ORIGINS = [
+  FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+
+// En producción también aceptamos cualquier subdominio de vercel.app
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return true; // peticiones sin origin (curl, Render health checks)
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  if (origin.endsWith('.vercel.app')) return true;
+  if (origin.endsWith('.onrender.com')) return true;
+  return false;
+}
 
 const app = express();
 
-// ─── Middleware ────────────────────────────────────────────────────
 app.use(cors({
-  origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000'],
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS bloqueado para origen: ${origin}`));
+    }
+  },
   credentials: true,
 }));
 app.use(express.json());
 
-// ─── HTTP Server ──────────────────────────────────────────────────
 const httpServer = createServer(app);
 
-// ─── Socket.io ────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: {
-    origin: [FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000'],
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS bloqueado para origen: ${origin}`));
+      }
+    },
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -43,29 +65,15 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
 });
 
-// ─── Sprint 4: PeerJS Server (TS-03) ──────────────────────────────
-/**
- * Montamos el PeerJS signaling server sobre el mismo httpServer.
- * El frontend se conecta con:
- *   new Peer(undefined, {
- *     host: '<host>',
- *     port: 3002,
- *     path: '/peerjs',
- *     config: { iceServers: <recibidos por socket 'ice_servers'> }
- *   })
- *
- * ExpressTURN se configura en el frontend pasando las credenciales
- * recibidas a través del evento Socket.io 'ice_servers' (ver webrtcHandler).
- */
+// ─── PeerJS Server ────────────────────────────────────────────────
 const peerServer = ExpressPeerServer(httpServer, {
-  path: '/',                  // La ruta completa queda como PEERJS_PATH + '/'
-  allow_discovery: false,     // No exponer lista de peers por seguridad
+  path: '/',
+  allow_discovery: false,
   proxied: process.env.NODE_ENV === 'production',
 });
 
 app.use(PEERJS_PATH, peerServer);
 
-// Logs de conexión/desconexión de peers
 peerServer.on('connection', (client) => {
   console.log(`[PeerJS] Peer conectado: ${client.getId()}`);
 });
@@ -83,6 +91,7 @@ app.get('/health', (_req, res) => {
     connectedSockets: io.engine.clientsCount,
     activeRooms: rooms.size,
     peerServerPath: PEERJS_PATH,
+    allowedOrigins: ALLOWED_ORIGINS,
     turnConfigured: !!(
       process.env.TURN_URL &&
       process.env.TURN_USERNAME &&
@@ -93,17 +102,12 @@ app.get('/health', (_req, res) => {
   });
 });
 
-/**
- * Endpoint HTTP para que el frontend obtenga la config ICE sin necesidad
- * de tener un socket abierto (útil en inicialización temprana).
- * GET /ice-servers → { iceServers: RTCIceServer[] }
- */
 app.get('/ice-servers', (_req, res) => {
   res.json({ iceServers: buildIceServers() });
 });
 
 // ─── In-memory state ──────────────────────────────────────────────
-const rooms        = new Map<string, RoomState>();
+const rooms         = new Map<string, RoomState>();
 const socketUserMap = new Map<string, UserInfo>();
 
 // ─── Socket.io connection ─────────────────────────────────────────
@@ -125,7 +129,8 @@ httpServer.listen(PORT, () => {
   console.log(`🔌 WebSocket (Socket.io) listo para conexiones`);
   console.log(`📡 PeerJS Signaling Server en http://localhost:${PORT}${PEERJS_PATH}`);
   console.log(`🔒 TURN configurado: ${!!(process.env.TURN_URL) ? '✅ ExpressTURN activo' : '⚠️  Solo STUN (configura TURN_* en .env)'}`);
-  console.log(`🌍 Entorno: ${process.env.NODE_ENV ?? 'development'}\n`);
+  console.log(`🌍 Entorno: ${process.env.NODE_ENV ?? 'development'}`);
+  console.log(`🌐 CORS permitido para: ${ALLOWED_ORIGINS.join(', ')} + *.vercel.app\n`);
 });
 
 export { io };
