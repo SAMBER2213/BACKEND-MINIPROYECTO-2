@@ -18,6 +18,7 @@ async function syncRoomParticipantCount(roomId: string, participantCount: number
 
 /**
  * Maneja los eventos de entrar y salir de salas de estudio.
+ * Sprint 4: ahora acepta peerId opcional en join_room para PeerJS (TS-03).
  */
 export const registerRoomHandlers = (
   io: Server,
@@ -29,9 +30,10 @@ export const registerRoomHandlers = (
   /**
    * Evento: 'join_room'
    * El cliente debe enviar su Firebase ID Token para autenticarse.
+   * Sprint 4: acepta peerId opcional para registrar al usuario en PeerJS desde el inicio.
    */
   socket.on('join_room', async (payload: JoinRoomPayload) => {
-    const { roomId, token, roomCode } = payload;
+    const { roomId, token, roomCode, peerId } = payload;
 
     if (!roomId || !token) {
       socket.emit('error', { message: 'roomId y token son requeridos' });
@@ -49,6 +51,7 @@ export const registerRoomHandlers = (
         displayName: userData?.displayName ?? decoded.name ?? 'Usuario',
         photoURL: userData?.photoURL ?? decoded.picture ?? null,
         socketId: socket.id,
+        peerId: peerId ?? null,   // ← Sprint 4
         isMuted: false,
         isCameraOff: false,
         isSharingScreen: false,
@@ -63,7 +66,6 @@ export const registerRoomHandlers = (
       const roomData = roomDoc.data()!;
 
       // Si la sala es privada, solo el host puede entrar directamente por roomId.
-      // Cualquier otro usuario debe unirse por roomCode (validado en el frontend).
       if (roomData.isPrivate && roomData.hostUid !== decoded.uid) {
         if (!roomCode || roomCode.toUpperCase().trim() !== roomData.roomCode) {
           socket.emit('error', { message: 'Esta sala es privada. El código de sala es incorrecto.' });
@@ -85,6 +87,7 @@ export const registerRoomHandlers = (
         return;
       }
 
+      // Si el usuario ya estaba conectado (reconexión), limpiar estado anterior
       if (room.participants.has(decoded.uid)) {
         const oldUser = room.participants.get(decoded.uid)!;
         room.participants.delete(decoded.uid);
@@ -93,6 +96,7 @@ export const registerRoomHandlers = (
           uid: oldUser.uid,
           socketId: oldUser.socketId,
           displayName: oldUser.displayName,
+          peerId: oldUser.peerId,  // ← Sprint 4
         });
       }
 
@@ -101,9 +105,15 @@ export const registerRoomHandlers = (
       await socket.join(roomId);
       await syncRoomParticipantCount(roomId, room.participants.size);
 
-      console.log(`[Room] ${userInfo.displayName} se unió a sala ${roomId} (${room.participants.size} participantes)`);
+      console.log(
+        `[Room] ${userInfo.displayName} se unió a sala ${roomId}` +
+        ` (${room.participants.size} participantes)` +
+        (userInfo.peerId ? ` peerId=${userInfo.peerId}` : '')
+      );
 
       const participantsList = Array.from(room.participants.values());
+
+      // Enviar al usuario que se unió: sala actual + lista completa con peerIds
       socket.emit('room_joined', {
         roomId,
         user: userInfo,
@@ -111,6 +121,7 @@ export const registerRoomHandlers = (
         room: roomData,
       });
 
+      // Notificar al resto: nuevo participante (incluye peerId si ya lo tiene)
       socket.to(roomId).emit('participant_joined', {
         user: userInfo,
         participants: participantsList,
@@ -166,10 +177,12 @@ async function handleLeaveRoom(
 
   console.log(`[Room] ${user.displayName} salió de sala ${roomId} (${room.participants.size} restantes)`);
 
+  // Sprint 4: incluir peerId para que el frontend cierre la conexión P2P
   io.to(roomId).emit('participant_left', {
     uid: user.uid,
     socketId: socket.id,
     displayName: user.displayName,
+    peerId: user.peerId ?? null,
   });
 
   if (room.participants.size === 0) {

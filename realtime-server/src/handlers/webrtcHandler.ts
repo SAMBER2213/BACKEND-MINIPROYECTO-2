@@ -7,16 +7,51 @@ import {
   WebRTCIceCandidatePayload,
   MediaStatePayload,
   ScreenSharePayload,
+  RegisterPeerPayload,
 } from '../types';
 
 /**
- * Maneja el signaling WebRTC para establecer conexiones P2P.
+ * Construye la lista de ICE servers usando las variables de entorno de ExpressTURN.
+ * Si no hay credenciales configuradas, devuelve solo el STUN público de Google.
  *
- * Flujo de negociación WebRTC:
- * 1. Usuario A entra a la sala → se notifica a todos
- * 2. Usuarios existentes envían 'webrtc_offer' a A
- * 3. A responde con 'webrtc_answer'
- * 4. Se intercambian ICE candidates hasta establecer conexión P2P
+ * El frontend debe usar estos servidores al crear RTCPeerConnection para garantizar
+ * conectividad incluso detrás de NAT/firewall simétricos (TS-03).
+ */
+export function buildIceServers(): RTCIceServer[] {
+  const servers: RTCIceServer[] = [
+    // STUN público como fallback
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ];
+
+  const turnUrl        = process.env.TURN_URL;
+  const turnUsername   = process.env.TURN_USERNAME;
+  const turnCredential = process.env.TURN_CREDENTIAL;
+
+  if (turnUrl && turnUsername && turnCredential) {
+    servers.push({
+      urls: turnUrl,
+      username: turnUsername,
+      credential: turnCredential,
+    });
+    console.log(`[ICE] Servidor TURN configurado: ${turnUrl}`);
+  } else {
+    console.warn('[ICE] Variables TURN_URL / TURN_USERNAME / TURN_CREDENTIAL no configuradas. Usando solo STUN.');
+  }
+
+  return servers;
+}
+
+/**
+ * Maneja el signaling WebRTC + registro de PeerJS para Sprint 4.
+ *
+ * Flujo completo (TS-03):
+ * 1. Cliente A se conecta, recibe room_joined con la lista de participantes (con peerIds).
+ * 2. Cliente A inicia su PeerJS peer, obtiene su peerId y emite 'register_peer'.
+ * 3. El servidor guarda el peerId y notifica a la sala ('peer_registered').
+ * 4. Clientes existentes llaman peer.call(peerId_de_A) para audio/video P2P.
+ * 5. Los streams SDP/ICE viajan directo browser↔browser via PeerJS server.
+ * 6. El signaling clásico (webrtc_offer/answer/ice) queda disponible como fallback.
  */
 export const registerWebRTCHandlers = (
   io: Server,
@@ -24,6 +59,61 @@ export const registerWebRTCHandlers = (
   rooms: Map<string, RoomState>,
   socketUserMap: Map<string, UserInfo>
 ): void => {
+
+  // ─── Sprint 4: ICE servers config ──────────────────────────────
+  /**
+   * El cliente solicita la configuración ICE (STUN + TURN de ExpressTURN).
+   * Debe llamarse antes de crear cualquier RTCPeerConnection o PeerJS Peer.
+   *
+   * Evento cliente → servidor: 'get_ice_servers'
+   * Evento servidor → cliente: 'ice_servers' { iceServers: RTCIceServer[] }
+   */
+  socket.on('get_ice_servers', () => {
+    const iceServers = buildIceServers();
+    socket.emit('ice_servers', { iceServers });
+    console.log(`[ICE] Configuración enviada a socket:${socket.id}`);
+  });
+
+  // ─── Sprint 4: PeerJS peer registration ────────────────────────
+  /**
+   * El cliente registra su PeerJS peer ID para que los demás puedan llamarlo.
+   *
+   * Evento cliente → servidor: 'register_peer' { roomId, peerId }
+   * Evento servidor → sala:    'peer_registered' { uid, peerId, socketId, displayName, photoURL, isMuted, isCameraOff }
+   */
+  socket.on('register_peer', (payload: RegisterPeerPayload) => {
+    const user = socketUserMap.get(socket.id);
+    if (!user) {
+      socket.emit('error', { message: 'No estás autenticado en ninguna sala' });
+      return;
+    }
+
+    const room = rooms.get(payload.roomId);
+    if (!room || !room.participants.has(user.uid)) {
+      socket.emit('error', { message: 'No estás en esta sala' });
+      return;
+    }
+
+    // Guardar peerId en el estado del usuario
+    user.peerId = payload.peerId;
+    room.participants.set(user.uid, user);
+    socketUserMap.set(socket.id, user);
+
+    console.log(`[PeerJS] ${user.displayName} registró peerId: ${payload.peerId} en sala ${payload.roomId}`);
+
+    // Notificar a TODOS en la sala (incluyendo al propio usuario para confirmación)
+    io.to(payload.roomId).emit('peer_registered', {
+      uid: user.uid,
+      peerId: payload.peerId,
+      socketId: socket.id,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+      isMuted: user.isMuted,
+      isCameraOff: user.isCameraOff,
+    });
+  });
+
+  // ─── WebRTC Signaling clásico (fallback / compatibilidad) ──────
 
   /**
    * Reenvía una oferta SDP al peer objetivo.
@@ -69,6 +159,8 @@ export const registerWebRTCHandlers = (
     });
   });
 
+  // ─── Media state ───────────────────────────────────────────────
+
   /**
    * Actualiza el estado de medios (micrófono/cámara) y notifica a la sala.
    */
@@ -79,16 +171,14 @@ export const registerWebRTCHandlers = (
     const room = rooms.get(payload.roomId);
     if (!room || !room.participants.has(user.uid)) return;
 
-    // Update user state
-    user.isMuted = payload.isMuted;
-    user.isCameraOff = payload.isCameraOff;
+    user.isMuted      = payload.isMuted;
+    user.isCameraOff  = payload.isCameraOff;
     room.participants.set(user.uid, user);
 
     console.log(
       `[Media] ${user.displayName}: muted=${payload.isMuted}, cameraOff=${payload.isCameraOff}`
     );
 
-    // Notify all participants in the room
     socket.to(payload.roomId).emit('media_state_update', {
       uid: user.uid,
       isMuted: payload.isMuted,
