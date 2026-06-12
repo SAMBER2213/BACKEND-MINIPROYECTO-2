@@ -23,7 +23,15 @@ Authorization: Bearer <firebase-id-token>
 - **Rooms** - Gestión de salas de estudio (crear, editar, eliminar, unirse)
 - **Messages** - Historial de chat persistente en Firestore
 
-## Servidor de Tiempo Real (Socket.IO) — puerto 3002
+## Sprint 4 — WebRTC P2P (TS-03, US-09, US-12)
+- **PeerJS Signaling Server** montado en \`/peerjs\` del realtime-server
+- **ExpressTURN** para conectividad P2P detrás de NAT/firewall
+- **Grid dinámico de video** (US-09): la UI se adapta al número de participantes
+- **Transmisión A/V** (US-12): audio y video viajan directamente entre browsers
+- Nuevos eventos Socket.IO: \`get_ice_servers\`, \`register_peer\`, \`ice_servers\`, \`peer_registered\`
+- Eventos existentes actualizados: \`join_room\`, \`room_joined\`, \`participant_joined\`, \`participant_left\` (incluyen \`peerId\`)
+
+## Servidor de Tiempo Real (Socket.IO + PeerJS) — puerto 3002
 
 El **realtime-server** es un proceso independiente que maneja la comunicación en tiempo real mediante **WebSockets (Socket.IO)**. El cliente debe conectarse a \`ws://localhost:3002\` (o la URL de producción) e incluir el **Firebase ID Token** en el evento \`join_room\` para autenticarse.
 
@@ -83,7 +91,11 @@ El **realtime-server** es un proceso independiente que maneja la comunicación e
       },
       {
         url: 'http://localhost:3002',
-        description: 'Desarrollo local — Realtime Server (Socket.IO)',
+        description: 'Desarrollo local — Realtime Server (Socket.IO + PeerJS)',
+      },
+      {
+        url: 'https://studysync-realtime.onrender.com',
+        description: 'Producción (Render) — Realtime Server (Socket.IO + PeerJS)',
       },
     ],
     components: {
@@ -156,6 +168,7 @@ El **realtime-server** es un proceso independiente que maneja la comunicación e
             roomId: { type: 'string', example: 'AbCd1234XyZw', description: 'ID del documento Firestore de la sala' },
             token: { type: 'string', description: 'Firebase ID Token del usuario autenticado' },
             roomCode: { type: 'string', example: 'ABCD1234', description: 'Código corto de 8 caracteres. Requerido solo si la sala es privada y el usuario no es el anfitrión.' },
+            peerId: { type: 'string', description: 'Sprint 4: PeerJS peer ID del usuario (opcional). Si se envía junto con join_room, se registra directamente sin necesitar register_peer por separado.' },
           },
         },
         RoomJoinedPayload: {
@@ -208,6 +221,7 @@ El **realtime-server** es un proceso independiente que maneja la comunicación e
             displayName: { type: 'string', example: 'Juan García' },
             photoURL: { type: 'string', nullable: true },
             socketId: { type: 'string', example: 'abc123socketId', description: 'ID de conexión Socket.IO' },
+            peerId: { type: 'string', nullable: true, description: 'Sprint 4: PeerJS peer ID del usuario. null hasta que el usuario emita register_peer.' },
             isMuted: { type: 'boolean', default: false },
             isCameraOff: { type: 'boolean', default: false },
             isSharingScreen: { type: 'boolean', default: false },
@@ -261,6 +275,7 @@ El **realtime-server** es un proceso independiente que maneja la comunicación e
             uid: { type: 'string', example: 'abc123uid' },
             socketId: { type: 'string', example: 'abc123socketId' },
             displayName: { type: 'string', example: 'Juan García' },
+            peerId: { type: 'string', nullable: true, description: 'Sprint 4: PeerJS peer ID del usuario que salió. El frontend debe cerrar la conexión P2P con este peer.' },
           },
         },
         WebRTCOfferPayload: {
@@ -291,6 +306,83 @@ El **realtime-server** es un proceso independiente que maneja la comunicación e
             roomId: { type: 'string' },
             targetSocketId: { type: 'string' },
             candidate: { type: 'object', description: 'RTCIceCandidateInit' },
+          },
+        },
+        // ─── Sprint 4: WebRTC + PeerJS Schemas ───────────────────────────
+        GetIceServersEvent: {
+          type: 'object',
+          description: 'Evento Socket.IO get_ice_servers (Cliente → Servidor). No requiere payload. Solicita la configuración ICE con STUN + TURN antes de crear el peer.',
+          properties: {},
+        },
+        IceServersPayload: {
+          type: 'object',
+          description: 'Respuesta al evento get_ice_servers (Servidor → Cliente). Contiene la lista de servidores ICE (STUN + TURN de ExpressTURN) para construir el RTCPeerConnection.',
+          properties: {
+            iceServers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  urls: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], example: 'stun:stun.l.google.com:19302' },
+                  username: { type: 'string', description: 'Solo presente en servidores TURN' },
+                  credential: { type: 'string', description: 'Solo presente en servidores TURN' },
+                },
+              },
+              example: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'turn:relay1.expressturn.com:3480', username: 'efXXXX', credential: 'XXXX' },
+              ],
+            },
+          },
+        },
+        RegisterPeerPayload: {
+          type: 'object',
+          description: 'Evento Socket.IO register_peer (Cliente → Servidor). El cliente emite este evento después de que PeerJS le asigna un peerId. El servidor lo guarda y notifica a todos en la sala.',
+          required: ['roomId', 'peerId'],
+          properties: {
+            roomId: { type: 'string', example: 'AbCd1234XyZw', description: 'ID del documento Firestore de la sala donde está el usuario' },
+            peerId: { type: 'string', example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', description: 'PeerJS peer ID asignado por el PeerJS server al cliente' },
+          },
+        },
+        PeerRegisteredPayload: {
+          type: 'object',
+          description: 'Evento Socket.IO peer_registered (Servidor → todos en la sala). Notifica que un usuario registró su peerId y está listo para recibir llamadas P2P.',
+          properties: {
+            uid: { type: 'string', example: 'abc123uid', description: 'Firebase UID del usuario' },
+            peerId: { type: 'string', example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', description: 'PeerJS peer ID. Otros participantes deben llamar peer.call(peerId) para conectarse.' },
+            socketId: { type: 'string', example: 'abc123socketId', description: 'Socket.IO connection ID' },
+            displayName: { type: 'string', example: 'Juan García' },
+            photoURL: { type: 'string', nullable: true },
+            isMuted: { type: 'boolean', default: false },
+            isCameraOff: { type: 'boolean', default: false },
+          },
+        },
+        IceServersHTTPResponse: {
+          type: 'object',
+          description: 'Respuesta del endpoint HTTP GET /ice-servers del realtime-server. Alternativa al evento Socket.IO get_ice_servers para obtener la config ICE antes de conectar el socket.',
+          properties: {
+            iceServers: {
+              type: 'array',
+              items: { type: 'object' },
+              description: 'Lista de RTCIceServer: STUN públicos de Google + TURN de ExpressTURN (si configurado en .env)',
+            },
+          },
+        },
+        RealtimeHealthResponse: {
+          type: 'object',
+          description: 'Respuesta del endpoint HTTP GET /health del realtime-server (Sprint 4: incluye turnConfigured y activeRooms)',
+          properties: {
+            success: { type: 'boolean', example: true },
+            status: { type: 'string', example: 'ok' },
+            service: { type: 'string', example: 'StudySync Realtime Server' },
+            connectedSockets: { type: 'integer', example: 4, description: 'Número de clientes Socket.IO conectados' },
+            activeRooms: { type: 'integer', example: 2, description: 'Número de salas activas en memoria' },
+            peerServerPath: { type: 'string', example: '/peerjs', description: 'Ruta del PeerJS Signaling Server' },
+            allowedOrigins: { type: 'array', items: { type: 'string' }, description: 'Orígenes CORS permitidos' },
+            turnConfigured: { type: 'boolean', example: true, description: 'Sprint 4: Indica si ExpressTURN está configurado (TURN_URL, TURN_USERNAME, TURN_CREDENTIAL en .env)' },
+            timestamp: { type: 'string', format: 'date-time' },
+            uptime: { type: 'integer', example: 3600, description: 'Segundos que lleva corriendo el servidor' },
           },
         },
         // ─── Utility Schemas ──────────────────────────────────────────────
