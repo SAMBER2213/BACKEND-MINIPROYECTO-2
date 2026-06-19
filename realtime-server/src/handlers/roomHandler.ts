@@ -29,8 +29,20 @@ export const registerRoomHandlers = (
 
   /**
    * Evento: 'join_room'
-   * El cliente debe enviar su Firebase ID Token para autenticarse.
-   * Sprint 4: acepta peerId opcional para registrar al usuario en PeerJS desde el inicio.
+   * Autentica al usuario con su Firebase ID Token y lo une a la sala.
+   * Si la sala es privada, verifica el roomCode. Soporta reconexión limpiando
+   * el estado anterior del mismo usuario.
+   *
+   * @listens join_room
+   * @param payload.roomId - ID de la sala en Firestore
+   * @param payload.token - Firebase ID Token del usuario autenticado
+   * @param payload.roomCode - Código de acceso (requerido si la sala es privada)
+   * @param payload.peerId - PeerJS peer ID del cliente para llamadas P2P (Sprint 4, opcional)
+   *
+   * @fires room_joined - Solo al usuario que se une: sala, perfil propio y lista de participantes
+   * @fires participant_joined - Al resto de la sala: nuevo participante con su peerId
+   * @fires participant_left - Al resto, si había sesión previa del mismo usuario (reconexión)
+   * @fires error - Al cliente si el token es inválido, la sala no existe o está llena
    */
   socket.on('join_room', async (payload: JoinRoomPayload) => {
     const { roomId, token, roomCode, peerId } = payload;
@@ -138,10 +150,25 @@ export const registerRoomHandlers = (
     }
   });
 
+  /**
+   * Evento: 'leave_room'
+   * El cliente abandona voluntariamente la sala.
+   *
+   * @listens leave_room
+   * @param payload.roomId - ID de la sala a abandonar
+   * @fires participant_left - A todos en la sala con uid, socketId y peerId del usuario
+   */
   socket.on('leave_room', async (payload: { roomId: string }) => {
     await handleLeaveRoom(io, socket, rooms, socketUserMap, payload.roomId);
   });
 
+  /**
+   * Evento nativo de Socket.io emitido cuando el cliente se desconecta (cierra pestaña, red caída, etc.).
+   * Elimina al usuario de todas las salas en las que estuviera participando.
+   *
+   * @listens disconnect
+   * @fires participant_left - A cada sala activa del usuario con su peerId incluido
+   */
   socket.on('disconnect', async (reason) => {
     const user = socketUserMap.get(socket.id);
     if (!user) return;

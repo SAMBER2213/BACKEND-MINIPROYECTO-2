@@ -124,66 +124,48 @@ Abre tu navegador en: **http://localhost:3001/api/docs**
 
 | Evento | Payload | Descripción |
 |--------|---------|-------------|
-| `join_room` | `{ roomId, token, roomCode?, peerId? }` | Entrar a una sala (autenticado). `peerId` opcional para PeerJS (Sprint 4) |
+| `join_room` | `{ roomId, token }` | Entrar a una sala (autenticado) |
 | `leave_room` | `{ roomId }` | Salir de una sala |
 | `send_message` | `{ roomId, text, clientMessageId? }` | Enviar mensaje de chat en tiempo real |
 | `media_state_change` | `{ roomId, isMuted, isCameraOff }` | Cambiar estado A/V |
 | `screen_share_change` | `{ roomId, isSharingScreen }` | Compartir/dejar de compartir pantalla |
-| `get_ice_servers` | *(sin payload)* | Solicitar configuración STUN/TURN antes de crear `RTCPeerConnection` |
-| `register_peer` | `{ roomId, peerId }` | Registrar PeerJS peer ID para que los demás puedan iniciar llamadas P2P |
-| `webrtc_offer` | `{ roomId, targetSocketId, sdp }` | Oferta SDP WebRTC (fallback signaling) |
-| `webrtc_answer` | `{ roomId, targetSocketId, sdp }` | Respuesta SDP WebRTC (fallback signaling) |
-| `webrtc_ice_candidate` | `{ roomId, targetSocketId, candidate }` | ICE Candidate (fallback signaling) |
+| `webrtc_offer` | `{ roomId, targetSocketId, sdp }` | Oferta SDP WebRTC |
+| `webrtc_answer` | `{ roomId, targetSocketId, sdp }` | Respuesta SDP WebRTC |
+| `webrtc_ice_candidate` | `{ roomId, targetSocketId, candidate }` | ICE Candidate |
 
 ### Servidor → Cliente
 
 | Evento | Descripción |
 |--------|-------------|
-| `room_joined` | Confirmación de entrada + lista de participantes (incluye `peerId` de cada uno) |
-| `participant_joined` | Nuevo participante en la sala (incluye `peerId` si ya lo registró) |
-| `participant_left` | Participante salió (incluye `peerId` para cerrar conexión P2P activa) |
+| `room_joined` | Confirmación de entrada + lista de participantes |
+| `participant_joined` | Nuevo participante en la sala |
+| `participant_left` | Participante salió |
 | `new_message` | Nuevo mensaje de chat emitido a todos los sockets de la sala |
 | `message_saved` | Confirmación de persistencia del mensaje en Firestore |
 | `message_failed` | El mensaje no pudo guardarse en Firestore |
 | `chat_error` | Error específico del flujo de chat |
 | `media_state_update` | Estado A/V de un participante cambió |
-| `ice_servers` | Respuesta a `get_ice_servers` con config STUN/TURN `{ iceServers: RTCIceServer[] }` |
-| `peer_registered` | Notifica a toda la sala que un nuevo peer está disponible para llamadas P2P |
 | `error` | Error del servidor |
 
 ---
 
-## Flujo WebRTC / P2P — Sprint 4 (PeerJS + Signaling)
-
-El servidor actúa como **intermediario de señalización**: nunca toca el audio/video, solo coordina los metadatos para que los navegadores se conecten directamente entre sí.
+## Flujo WebRTC (Signaling)
 
 ```
-Cliente A                    Servidor                   Cliente B
-   │                            │                           │
-   │── join_room ──────────────▶│                           │
-   │◀─ room_joined ─────────────│  (lista de participantes  │
-   │                            │   incluye peerIds)        │
-   │── get_ice_servers ────────▶│                           │
-   │◀─ ice_servers ─────────────│                           │
-   │                            │                           │
-   │  (inicia PeerJS Peer)      │── join_room ◀─────────────│
-   │── register_peer ──────────▶│◀─ get_ice_servers ────────│
-   │◀── peer_registered ────────│── ice_servers ───────────▶│
-   │                   ─────────│── peer_registered ───────▶│
-   │                            │                           │
-   │  peer.call(peerId_B) ◀─────────── PeerJS directo ─────▶│
-   │                            │                           │
-   │◀══════════ audio/video P2P directo (sin pasar por el servidor) ══════▶│
-   │                            │                           │
-   │── media_state_change ─────▶│── media_state_update ────▶│
-   │── send_message ───────────▶│── new_message ───────────▶│
-   │                            │                           │
-   │── leave_room ─────────────▶│── participant_left ───────▶│
-   │                            │  (incluye peerId para      │
-   │                            │   cerrar conexión P2P)     │
+Usuario A (ya en sala)    Servidor Signaling    Usuario B (nuevo)
+       |                        |                      |
+       |                        |<-- join_room --------|
+       |<-- participant_joined --|                      |
+       |                        |                      |
+       |--- webrtc_offer ------->|                      |
+       |                        |--- webrtc_offer ----->|
+       |                        |<-- webrtc_answer -----|
+       |<-- webrtc_answer -------|                      |
+       |                        |                      |
+       |<-- webrtc_ice_candidate (ambas direcciones) -->|
+       |                        |                      |
+       |<============ Conexión P2P establecida ========>|
 ```
-
-> **Fallback signaling clásico:** si PeerJS no está disponible, los eventos `webrtc_offer`, `webrtc_answer` y `webrtc_ice_candidate` permiten negociar la conexión WebRTC manualmente a través del servidor.
 
 ---
 

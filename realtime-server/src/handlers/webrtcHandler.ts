@@ -62,11 +62,12 @@ export const registerWebRTCHandlers = (
 
   // ─── Sprint 4: ICE servers config ──────────────────────────────
   /**
-   * El cliente solicita la configuración ICE (STUN + TURN de ExpressTURN).
-   * Debe llamarse antes de crear cualquier RTCPeerConnection o PeerJS Peer.
+   * Evento: 'get_ice_servers'
+   * El cliente solicita la configuración de servidores ICE (STUN + TURN).
+   * Debe llamarse antes de crear cualquier `RTCPeerConnection` o `PeerJS Peer`.
    *
-   * Evento cliente → servidor: 'get_ice_servers'
-   * Evento servidor → cliente: 'ice_servers' { iceServers: RTCIceServer[] }
+   * @listens get_ice_servers
+   * @fires ice_servers - Solo al cliente solicitante `{ iceServers: RTCIceServer[] }`
    */
   socket.on('get_ice_servers', () => {
     const iceServers = buildIceServers();
@@ -76,10 +77,17 @@ export const registerWebRTCHandlers = (
 
   // ─── Sprint 4: PeerJS peer registration ────────────────────────
   /**
-   * El cliente registra su PeerJS peer ID para que los demás puedan llamarlo.
+   * Evento: 'register_peer'
+   * El cliente registra su PeerJS peer ID una vez conectado al PeerJS server.
+   * Los demás participantes usarán este ID para iniciar llamadas de audio/video P2P.
    *
-   * Evento cliente → servidor: 'register_peer' { roomId, peerId }
-   * Evento servidor → sala:    'peer_registered' { uid, peerId, socketId, displayName, photoURL, isMuted, isCameraOff }
+   * @listens register_peer
+   * @param payload.roomId - ID de la sala activa
+   * @param payload.peerId - PeerJS peer ID del cliente
+   *
+   * @fires peer_registered - A TODOS en la sala (incluido el propio cliente como confirmación)
+   *   con `{ uid, peerId, socketId, displayName, photoURL, isMuted, isCameraOff }`
+   * @fires error - Solo al cliente si no está autenticado o no está en la sala
    */
   socket.on('register_peer', (payload: RegisterPeerPayload) => {
     const user = socketUserMap.get(socket.id);
@@ -162,7 +170,16 @@ export const registerWebRTCHandlers = (
   // ─── Media state ───────────────────────────────────────────────
 
   /**
-   * Actualiza el estado de medios (micrófono/cámara) y notifica a la sala.
+   * Evento: 'media_state_change'
+   * El cliente notifica un cambio en su micrófono o cámara.
+   * Actualiza el estado en memoria y lo propaga al resto de la sala.
+   *
+   * @listens media_state_change
+   * @param payload.roomId - ID de la sala activa
+   * @param payload.isMuted - `true` si el micrófono está silenciado
+   * @param payload.isCameraOff - `true` si la cámara está apagada
+   *
+   * @fires media_state_update - A todos los demás en la sala `{ uid, isMuted, isCameraOff }`
    */
   socket.on('media_state_change', (payload: MediaStatePayload) => {
     const user = socketUserMap.get(socket.id);
@@ -187,7 +204,16 @@ export const registerWebRTCHandlers = (
   });
 
   /**
-   * Notifica a la sala cuando alguien empieza/para de compartir pantalla.
+   * Evento: 'screen_share_change'
+   * El cliente notifica si comenzó o detuvo la compartición de pantalla.
+   * Actualiza el estado en memoria y lo propaga al resto de la sala.
+   *
+   * @listens screen_share_change
+   * @param payload.roomId - ID de la sala activa
+   * @param payload.isSharingScreen - `true` si está compartiendo pantalla
+   *
+   * @fires media_state_update - A todos los demás en la sala
+   *   `{ uid, isMuted, isCameraOff, isSharingScreen }`
    */
   socket.on('screen_share_change', (payload: ScreenSharePayload) => {
     const user = socketUserMap.get(socket.id);

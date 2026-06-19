@@ -8,12 +8,24 @@ import {
 } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
+/**
+ * Emite un error de chat al socket remitente.
+ * Emite dos eventos para compatibilidad: `chat_error` (UI) y `error` (genérico).
+ * @param socket - Socket del cliente que originó el error
+ * @param message - Descripción del error
+ */
 function emitChatError(socket: Socket, message: string): void {
   // chat_error es especifico para la UI del chat; error se mantiene por compatibilidad.
   socket.emit('chat_error', { message });
   socket.emit('error', { message });
 }
 
+/**
+ * Normaliza el texto de un mensaje: elimina espacios al inicio/fin.
+ * Devuelve cadena vacía si el valor no es string.
+ * @param value - Valor recibido del cliente (tipo desconocido)
+ * @returns Texto normalizado o cadena vacía
+ */
 function normalizeMessageText(value: unknown): string {
   if (typeof value !== 'string') return '';
   return value.trim();
@@ -35,7 +47,18 @@ export const registerChatHandlers = (
 
   /**
    * Evento: 'send_message'
-   * Envia un mensaje de chat a todos los participantes de la sala y lo persiste en Firestore.
+   * Recibe un mensaje de texto del cliente, lo valida, lo persiste en Firestore
+   * y lo emite a todos los participantes de la sala.
+   *
+   * @listens send_message
+   * @param payload.roomId - ID de la sala destino
+   * @param payload.text - Texto del mensaje (máx. 1000 caracteres)
+   * @param payload.clientMessageId - ID temporal del cliente para rastrear el envío (opcional)
+   *
+   * @fires new_message - A todos los sockets de la sala tras persistir en Firestore
+   * @fires message_saved - Solo al remitente, confirma la persistencia
+   * @fires message_failed - Solo al remitente, si Firestore falla
+   * @fires chat_error - Solo al remitente, si hay error de validación
    */
   socket.on('send_message', async (payload: SendMessagePayload) => {
     const roomId = typeof payload?.roomId === 'string' ? payload.roomId.trim() : '';
